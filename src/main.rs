@@ -10,7 +10,7 @@ use sqlx::postgres::{PgPoolOptions, PgPool};
 use dotenvy::dotenv;
 use std::env;
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
 
@@ -18,6 +18,25 @@ use argon2::{
 pub struct RegisterRequest {
     pub email: String,
     pub password: String,
+}
+
+#[derive(Deserialize)]
+pub struct LoginRequest {
+    pub email: String,
+    pub password: String,
+}
+
+// We use Serialize here so Axum can convert this struct into JSON for the response
+#[derive(serde::Serialize)]
+pub struct AuthResponse {
+    pub token: String,
+}
+
+// "Claims" are the pieces of information stored inside the JWT
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Claims {
+    pub sub: String, // Subject (Usually the User's ID)
+    pub exp: usize,  // Expiration time
 }
 
 // Our registration handler
@@ -52,6 +71,65 @@ async fn register_user(
         Err(_) => Err(StatusCode::CONFLICT), 
     }
 }
+
+async fn login_user(
+    State(pool): State<PgPool>,
+    Json(payload): Json<LoginRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    
+    // 1. Fetch the user from the database by email
+    let user = sqlx::query!(
+        "SELECT id, password_hash FROM users WHERE email = $1",
+        payload.email
+    )
+    .fetch_optional(&pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // If the user doesn't exist, return 401 Unauthorized
+    let user = match user {
+        Some(u) => u,
+        None => return Err(StatusCode::UNAUTHORIZED),
+    };
+
+    // 2. Parse the stored hash and verify the provided password against it
+    let parsed_hash = PasswordHash::new(&user.password_hash)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    let is_valid = Argon2::default()
+        .verify_password(payload.password.as_bytes(), &parsed_hash)
+        .is_ok();
+
+    if !is_valid {
+        return Err(StatusCode::UNAUTHORIZED); // Wrong password
+    }
+
+    // 3. Setup JWT Configuration
+    let secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set in .env");
+    
+    // Set the token to expire in 24 hours
+    let expiration = chrono::Utc::now()
+        .checked_add_signed(chrono::Duration::hours(24))
+        .expect("valid timestamp")
+        .timestamp() as usize;
+
+    let claims = Claims {
+        sub: user.id.to_string(),
+        exp: expiration,
+    };
+
+    // 4. Generate the actual JWT token string
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    // 5. Return a 200 OK status with the token in JSON format
+    Ok((StatusCode::OK, Json(AuthResponse { token })))
+}
+
 #[tokio::main]
 async fn main() {
     // Load environment variables from the .env file
@@ -72,7 +150,8 @@ async fn main() {
     // Inject the database pool and add our new route
     let app = Router::new()
         .route("/", get(|| async { "Hello, IAM Platform! Connected to DB." }))
-        .route("/auth/register", post(register_user)) // <-- New route here
+        .route("/auth/register", post(register_user))
+        .route("/auth/login", post(login_user)) // <-- New route
         .with_state(pool);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
