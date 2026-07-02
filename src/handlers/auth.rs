@@ -10,8 +10,6 @@ use axum::{
 };
 use sqlx::PgPool;
 use std::env;
-
-// Import our models
 use crate::models::auth::{AuthResponse, Claims, LoginRequest, RegisterRequest};
 
 pub async fn register_user(

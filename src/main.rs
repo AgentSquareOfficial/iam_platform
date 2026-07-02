@@ -10,7 +10,7 @@ use axum::{
 use dotenvy::dotenv;
 use sqlx::postgres::PgPoolOptions;
 use std::env;
-
+use handlers::organization::create_organization;
 // Import the functions we need from our new modules
 use handlers::auth::{get_me, login_user, register_user};
 use middleware::auth::auth_middleware;
@@ -31,6 +31,7 @@ async fn main() {
     // Protected routes
     let api_routes = Router::new()
         .route("/users/me", get(get_me))
+        .route("/organizations", post(create_organization))
         .route_layer(axum::middleware::from_fn(auth_middleware));
 
     // Public routes
@@ -44,8 +45,9 @@ async fn main() {
         .merge(api_routes)
         .with_state(pool);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    println!("🚀 Server running on http://localhost:3000");
+    // Change 3000 to 8080
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
+    println!("🚀 Server running on http://localhost:8080");
 
     axum::serve(listener, app).await.unwrap();
 }
